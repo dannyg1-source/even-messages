@@ -636,6 +636,57 @@ async function transcribePcmAudio(
   return (json.text || "").trim();
 }
 
+async function translateToColombianSpanish(
+  speechConfig: SpeechApiConfig,
+  text: string,
+): Promise<string> {
+  const response = await fetch(
+    `${normalizeSpeechBaseUrl(speechConfig.baseUrl)}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${speechConfig.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-20b",
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Translate the user's message into natural Colombian Spanish suitable for a casual message to their partner. Preserve names, numbers, emojis, tone, and meaning. Do not explain anything. Return only the translated Spanish. If the message is already Spanish, return it unchanged.",
+          },
+          {
+            role: "user",
+            content: text,
+          },
+        ],
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(body || `Translation failed (${response.status})`);
+  }
+
+  const json = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  const translated = json.choices?.[0]?.message?.content?.trim();
+  if (!translated) {
+    throw new Error("Translation returned no text");
+  }
+
+  return translated;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // DISPLAY BUILDERS
 // ═══════════════════════════════════════════════════════════════
@@ -1440,8 +1491,17 @@ export function GlassesUI({
     // Start the API request without waiting for native bridge cleanup. Bridge
     // calls can stall inside the Even WebView and previously made Send inert.
     void stopVoiceReply(false);
-    const sent = await sendMessage(transcript);
+let sent = false;
 
+try {
+  const translated = await translateToColombianSpanish(
+    speechConfig!,
+    transcript,
+  );
+  sent = await sendMessage(translated);
+} catch (e) {
+  console.warn("[GlassesUI] Translation failed:", e);
+}
     if (sent) {
       await hideNativeOverlay();
       setState((s) => ({
@@ -1461,7 +1521,7 @@ export function GlassesUI({
     }
 
     isVoiceSendingRef.current = false;
-  }, [hideNativeOverlay, state.voiceTranscript, stopVoiceReply]);
+  }, [hideNativeOverlay, speechConfig, state.voiceTranscript, stopVoiceReply]);
 
   const startVoiceReply = useCallback(async () => {
     if (

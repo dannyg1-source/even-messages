@@ -116,7 +116,8 @@ const ICONS = {
 
 // Quick reply presets (2 columns x 4 rows = 8 replies)
 const QUICK_REPLIES = [
-  "Voice",
+  "Voice EN",
+  "Voice ES",
   "Got it",
   "OK",
   "Thanks!",
@@ -1002,7 +1003,7 @@ function buildQuickReplyDisplay(
   lines.push(...optionLines.slice(windowStart, windowStart + visibleCount));
   lines.push(sep());
   const footerLabel =
-    selectedReply === "Voice"
+  selectedReply === "Voice EN" || selectedReply === "Voice ES"
       ? "Click to speak"
       : `Send : ${truncate(selectedReply, 34)}`;
   lines.push(line(footerLabel, "meta"));
@@ -1366,6 +1367,7 @@ export function GlassesUI({
   const isVoiceRecordingRef = useRef<boolean>(false);
   const isVoiceTranscribingRef = useRef<boolean>(false);
   const isVoiceSendingRef = useRef<boolean>(false);
+  const translateVoiceToSpanishRef = useRef<boolean>(true);
   const isVoiceCancelledRef = useRef<boolean>(false);
   const evenHubUnsubscribeRef = useRef<(() => void) | null>(null);
   const nativeOverlayEventUnsubscribeRef = useRef<(() => void) | null>(null);
@@ -1494,11 +1496,11 @@ export function GlassesUI({
 let sent = false;
 
 try {
-  const translated = await translateToColombianSpanish(
-    speechConfig!,
-    transcript,
-  );
-  sent = await sendMessage(translated);
+  const outgoingText = translateVoiceToSpanishRef.current
+    ? await translateToColombianSpanish(speechConfig!, transcript)
+    : transcript;
+
+  sent = await sendMessage(outgoingText);
 } catch (e) {
   console.warn("[GlassesUI] Translation failed:", e);
 }
@@ -1776,7 +1778,8 @@ try {
           return;
         }
 
-        if (selectedName === "Voice") {
+        if (selectedName === "Voice EN" || selectedName === "Voice ES") {
+  translateVoiceToSpanishRef.current = selectedName === "Voice ES";
           setState((s) => ({
             ...s,
             currentScreen: "voiceReply",
@@ -2527,7 +2530,8 @@ try {
             break;
           }
 
-          if (selectedReply === "Voice") {
+          if (selectedReply === "Voice EN" || selectedReply === "Voice ES") {
+  translateVoiceToSpanishRef.current = selectedReply === "Voice ES";
             updates.currentScreen = "voiceReply";
             updates.highlightedIndex = 0;
             updates.voiceStatus = "Starting mic...";

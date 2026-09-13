@@ -656,7 +656,7 @@ async function translateToColombianSpanish(
           {
             role: "system",
             content:
-              "Translate the user's message into natural Colombian Spanish suitable for a casual message to their partner. Preserve names, numbers, emojis, tone, and meaning. Do not explain anything. Return only the translated Spanish. If the message is already Spanish, return it unchanged.",
+              "Translate the user's message into natural Colombian Spanish suitable for a casual message to their partner. Preserve names, numbers, emojis, URLs, tone, and meaning. Do not explain anything. Return only the translated Spanish. If the message is already Spanish, return it unchanged.",
           },
           {
             role: "user",
@@ -687,6 +687,7 @@ async function translateToColombianSpanish(
 
   return translated;
 }
+
 async function translateIncomingToEnglish(
   speechConfig: SpeechApiConfig,
   text: string,
@@ -706,7 +707,7 @@ async function translateIncomingToEnglish(
           {
             role: "system",
             content:
-              "If the user's message is Spanish, translate it into natural English. If it is already English, return it exactly unchanged. Do not explain anything. Return only the message text.",
+              "Detect whether the user's message is Spanish or contains Spanish. If it is entirely non-Spanish (including English), return exactly __KEEP_ORIGINAL__ and nothing else. If it is Spanish or mixes Spanish with another language, translate the Spanish content into natural English while preserving names, numbers, emojis, URLs, tone, and any already-English content. Return exactly __TRANSLATED__ followed by the translated message. Do not explain anything.",
           },
           {
             role: "user",
@@ -730,7 +731,16 @@ async function translateIncomingToEnglish(
     }>;
   };
 
-  return json.choices?.[0]?.message?.content?.trim() || text;
+  const output = json.choices?.[0]?.message?.content?.trim();
+  const translatedMarker = "__TRANSLATED__";
+
+  if (output?.startsWith(translatedMarker)) {
+    const translated = output.slice(translatedMarker.length).trim();
+    return translated || text;
+  }
+
+  // English and any ambiguous/unexpected response stay exactly unchanged.
+  return text;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1048,7 +1058,7 @@ function buildQuickReplyDisplay(
   lines.push(...optionLines.slice(windowStart, windowStart + visibleCount));
   lines.push(sep());
   const footerLabel =
-  selectedReply === "Voice EN" || selectedReply === "Voice ES"
+    selectedReply === "Voice EN" || selectedReply === "Voice ES"
       ? "Click to speak"
       : `Send : ${truncate(selectedReply, 34)}`;
   lines.push(line(footerLabel, "meta"));
@@ -1413,6 +1423,9 @@ export function GlassesUI({
   const isVoiceTranscribingRef = useRef<boolean>(false);
   const isVoiceSendingRef = useRef<boolean>(false);
   const translateVoiceToSpanishRef = useRef<boolean>(false);
+  const incomingTranslationCacheRef = useRef<
+    Map<string, { sourceText: string; displayText: string }>
+  >(new Map());
   const isVoiceCancelledRef = useRef<boolean>(false);
   const evenHubUnsubscribeRef = useRef<(() => void) | null>(null);
   const nativeOverlayEventUnsubscribeRef = useRef<(() => void) | null>(null);
@@ -1538,17 +1551,18 @@ export function GlassesUI({
     // Start the API request without waiting for native bridge cleanup. Bridge
     // calls can stall inside the Even WebView and previously made Send inert.
     void stopVoiceReply(false);
-let sent = false;
+    let sent = false;
 
-try {
-  const outgoingText = translateVoiceToSpanishRef.current
-    ? await translateToColombianSpanish(speechConfig!, transcript)
-    : transcript;
+    try {
+      const outgoingText = translateVoiceToSpanishRef.current
+        ? await translateToColombianSpanish(speechConfig!, transcript)
+        : transcript;
 
-  sent = await sendMessage(outgoingText);
-} catch (e) {
-  console.warn("[GlassesUI] Translation failed:", e);
-}
+      sent = await sendMessage(outgoingText);
+    } catch (e) {
+      console.warn("[GlassesUI] Translation failed:", e);
+    }
+
     if (sent) {
       await hideNativeOverlay();
       setState((s) => ({
@@ -1824,7 +1838,7 @@ try {
         }
 
         if (selectedName === "Voice EN" || selectedName === "Voice ES") {
-  translateVoiceToSpanishRef.current = selectedName === "Voice ES";
+          translateVoiceToSpanishRef.current = selectedName === "Voice ES";
           setState((s) => ({
             ...s,
             currentScreen: "voiceReply",
@@ -2576,7 +2590,7 @@ try {
           }
 
           if (selectedReply === "Voice EN" || selectedReply === "Voice ES") {
-  translateVoiceToSpanishRef.current = selectedReply === "Voice ES";
+            translateVoiceToSpanishRef.current = selectedReply === "Voice ES";
             updates.currentScreen = "voiceReply";
             updates.highlightedIndex = 0;
             updates.voiceStatus = "Starting mic...";
@@ -2787,7 +2801,88 @@ try {
 
       const result = await beeper.listMessages(chatId);
       const messages = result.messages.reverse();
-      const finalMessages = messages;
+      const finalMessages = [...messages];
+
+      // Translate only the messages currently visible on the glasses. The cache
+      // prevents the 1-second poller from retranslating the same message.
+      if (
+        speechConfig?.baseUrl &&
+        speechConfig?.token &&
+        messages.length > 0
+      ) {
+        const maxIndex = messages.length - 1;
+        const targetIndex = options?.preserveScroll
+          ? Math.min(stateRef.current.messageScrollOffset, maxIndex)
+          : maxIndex;
+        const displayWindowSize = Math.max(1, DISPLAY_LINES - 3);
+        const maxStart = Math.max(0, messages.length - displayWindowSize);
+        const translationStart = Math.max(
+          0,
+          Math.min(maxStart, targetIndex - 1),
+        );
+        const translationEnd = Math.min(
+          messages.length,
+          translationStart + displayWindowSize,
+        );
+
+        const translatedWindow = await Promise.all(
+          messages
+            .slice(translationStart, translationEnd)
+            .map(async (msg) => {
+              if (msg.isSender || !msg.text?.trim()) {
+                return msg;
+              }
+
+              const sourceText = msg.text;
+              const cacheKey = `${msg.chatID}:${msg.id}`;
+              const cached = incomingTranslationCacheRef.current.get(cacheKey);
+
+              if (cached?.sourceText === sourceText) {
+                return cached.displayText === sourceText
+                  ? msg
+                  : { ...msg, text: cached.displayText };
+              }
+
+              try {
+                const displayText = await translateIncomingToEnglish(
+                  speechConfig,
+                  sourceText,
+                );
+
+                incomingTranslationCacheRef.current.set(cacheKey, {
+                  sourceText,
+                  displayText,
+                });
+
+                // Keep the cache bounded during long-running sessions.
+                if (incomingTranslationCacheRef.current.size > 500) {
+                  const oldestKey =
+                    incomingTranslationCacheRef.current.keys().next().value;
+                  if (oldestKey) {
+                    incomingTranslationCacheRef.current.delete(oldestKey);
+                  }
+                }
+
+                return displayText === sourceText
+                  ? msg
+                  : { ...msg, text: displayText };
+              } catch (e) {
+                console.warn(
+                  "[GlassesUI] Incoming translation failed:",
+                  e,
+                );
+                return msg;
+              }
+            }),
+        );
+
+        finalMessages.splice(
+          translationStart,
+          translatedWindow.length,
+          ...translatedWindow,
+        );
+      }
+
       const initialScroll = Math.max(0, finalMessages.length - 1);
 
       setState((s) => {

@@ -687,6 +687,51 @@ async function translateToColombianSpanish(
 
   return translated;
 }
+async function translateIncomingToEnglish(
+  speechConfig: SpeechApiConfig,
+  text: string,
+): Promise<string> {
+  const response = await fetch(
+    `${normalizeSpeechBaseUrl(speechConfig.baseUrl)}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${speechConfig.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-20b",
+        temperature: 0.1,
+        messages: [
+          {
+            role: "system",
+            content:
+              "If the user's message is Spanish, translate it into natural English. If it is already English, return it exactly unchanged. Do not explain anything. Return only the message text.",
+          },
+          {
+            role: "user",
+            content: text,
+          },
+        ],
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(body || `Translation failed (${response.status})`);
+  }
+
+  const json = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+
+  return json.choices?.[0]?.message?.content?.trim() || text;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // DISPLAY BUILDERS
@@ -1367,7 +1412,7 @@ export function GlassesUI({
   const isVoiceRecordingRef = useRef<boolean>(false);
   const isVoiceTranscribingRef = useRef<boolean>(false);
   const isVoiceSendingRef = useRef<boolean>(false);
-  const translateVoiceToSpanishRef = useRef<boolean>(true);
+  const translateVoiceToSpanishRef = useRef<boolean>(false);
   const isVoiceCancelledRef = useRef<boolean>(false);
   const evenHubUnsubscribeRef = useRef<(() => void) | null>(null);
   const nativeOverlayEventUnsubscribeRef = useRef<(() => void) | null>(null);
